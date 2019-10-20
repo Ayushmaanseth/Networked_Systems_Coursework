@@ -20,7 +20,6 @@ count = 0
 
 EMPTY_RESOURCE_RECORD = None
 
-
 # timeout in seconds to wait for reply
 TIMEOUT = 5
 
@@ -265,6 +264,8 @@ def recursiveLookup(data,address):
     try:
         (serverData,serverAddress) = cs.recvfrom(512)
     except timeout:
+        # if int(time()) - now > 2 * TIMEOUT:
+        #     return data
         return None
     header,question_entry,resource_records = deconstructData(serverData)
 
@@ -277,16 +278,16 @@ def recursiveLookup(data,address):
             elif resource_records[i]._type == RR.TYPE_A:
                 addresses.append(resource_records[i])
         
-        print("Answers exists already :)")
+        # print("Answers exists already :)")
         answer_record = resource_records[0]
         if answer_record._type == 1:
-            print("Found an answer! Returning...")
+            # print("Found an answer! Returning...")
             
             return serverData
         elif answer_record._type == 5:
-            print("Canonical record detected:",answer_record)
+            # print("Canonical record detected:",answer_record)
             address_to_search = str(answer_record._cname)
-            print(address_to_search)
+            # print(address_to_search)
             
 
             cnameData = constructQuery(header=Header.fromData(data),
@@ -296,13 +297,13 @@ def recursiveLookup(data,address):
 
             if cnameServerData is not None:
                 anscount = arcount = nscount = 0
-                print("Canonical server data returned for",answer_record,"is")
-                printDeconstructOutgoing(cnameServerData)
+                # print("Canonical server data returned for",answer_record,"is")
+                # printDeconstructOutgoing(cnameServerData)
                 cnameHeader,cnameQuestionEntry,cnameResourceRecords = deconstructData(cnameServerData)
-                print(hexdump(answer_record.pack()))
+                # print(hexdump(answer_record.pack()))
                 cnameResourceRecordsBin = b''
                 cnameResourceRecordsBin += answer_record.pack()
-                
+                anscount += 1
                 
                 # try:
                 #     cnameResourceRecordsBin = answer_record.pack()
@@ -315,23 +316,17 @@ def recursiveLookup(data,address):
                 #         cnameResourceRecordsBin = serverData[-(len(answer_record)):]
                 # except Exception as e:
                 #     pass
-                anscount += 1
-                cnamelen = 0
-                temp = 0
+                
                 for cnameRecord in cnameResourceRecords:
                     if cnameRecord._type == RR.TYPE_CNAME:
                         cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
                         anscount += 1
-                        cnamelen = len(cnameRecord)
-                    elif cnameRecord._type == RR.TYPE_A and temp == 0:
-                        try:
-                            cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
-                        except (struct.error , Exception) as e:
-                            cnameRecordBin = 
-                            cnameRecordBin = cnameRecordBin[:len(cnameRecordBin)-1]
-                            cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecordBin
+                    elif cnameRecord._type == RR.TYPE_A:
+                        cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
                         anscount += 1
-                        temp = 1
+                    else:
+                        break
+                    
                 # cnameFinalRecord = cnameResourceRecords[0]
                 # cnameResourceRecordsBin += cnameFinalRecord.pack()
                 # try:
@@ -357,8 +352,8 @@ def recursiveLookup(data,address):
                 cnameHeader._arcount = arcount
 
                 newCnameServerData = cnameHeader.pack() + cnameQuestionEntry.pack() + cnameResourceRecordsBin
-                print("New data returned should be:")
-                printDeconstructOutgoing(newCnameServerData)
+                # print("New data returned should be:")
+                # printDeconstructOutgoing(newCnameServerData)
 
                 return newCnameServerData
 
@@ -370,33 +365,33 @@ def recursiveLookup(data,address):
         flag = 0
         for record in resource_records:
             if record._type == RR.TYPE_A:
-                print("Address Record found is", record)
-                new_address = InetAddr.fromNetwork(record._addr).__str__()
-                print("---------------------------RECURSIVE CALL-------------------------------")
+                # print("Address Record found is", record)
+                new_address = str(InetAddr.fromNetwork(record._addr))
+                # print("---------------------------RECURSIVE CALL-------------------------------")
                 newServerData = recursiveLookup(data, new_address)
                 if(newServerData is not None):
-                    printDeconstructOutgoing(newServerData)
-                    h,q,rr = deconstructData(newServerData)
-                    for i in range(h._ancount):
-                        answers.append(rr[i])
-                    for i in range(h._ancount,len(rr)):
-                        if rr[i]._type == RR.TYPE_NS:
-                            nameservers.append(rr[i])
-                        elif rr[i]._type == RR.TYPE_A:
-                            addresses.append(rr[i])
+                    # printDeconstructOutgoing(newServerData)
+                    # h,q,rr = deconstructData(newServerData)
+                    # for i in range(h._ancount):
+                    #     answers.append(rr[i])
+                    # for i in range(h._ancount,len(rr)):
+                    #     if rr[i]._type == RR.TYPE_NS:
+                    #         nameservers.append(rr[i])
+                    #     elif rr[i]._type == RR.TYPE_A:
+                    #         addresses.append(rr[i])
                     
-                    print("Success! Sending response to Client")
+                    # # print("Success! Sending response to Client")
                     
-                    flag = 1
-                    h._ancount = len(answers)
-                    h._nscount = len(nameservers)
-                    h._arcount = len(addresses)
-                    h._aa = False
-                    h._ra = True
-                    rr_bin = getRecords(answers,addresses,nameservers,newServerData)
-                    pp.pprint(answers)
-                    printDeconstructOutgoing(h.pack() + question_entry.pack() + rr_bin)
-                    return h.pack() + question_entry.pack() + rr_bin
+                    # flag = 1
+                    # h._ancount = len(answers)
+                    # h._nscount = len(nameservers)
+                    # h._arcount = len(addresses)
+                    # h._aa = False
+                    # h._ra = True
+                    # rr_bin = getRecords(answers,addresses,nameservers,newServerData)
+                    # pp.pprint(answers)
+                    # printDeconstructOutgoing(h.pack() + question_entry.pack() + rr_bin)
+                    return newServerData
                     # return newServerData
                 else:
                     print("DIDNT GET ANYTHING BACK, continue")
@@ -409,32 +404,37 @@ def recursiveLookup(data,address):
             for record in resource_records:
                 if(record._type == RR.TYPE_NS):
                     new_address = str(record._nsdn)
-                    print("SEARCH FOR", new_address)
+                    # print("SEARCH FOR", new_address)
                     nsData = constructQuery(header= Header.fromData(data),
                                             domain_name=DomainName(new_address),type=QE.TYPE_A) + EMPTY_RESOURCE_RECORD
-                    print("-----------------------NS RECURSIVE CALL----------------")
+                    # print("-----------------------NS RECURSIVE CALL----------------")
                     nsServerData = recursiveLookup(nsData,ROOTNS_IN_ADDR)
-                    print("Got from root")
-                    printDeconstructOutgoing(nsServerData)
-                    nsHeader,nsQuestionEntry,nsResourceRecords = deconstructData(nsServerData)
-                    if(nsResourceRecords[0]._type==RR.TYPE_SOA):
-                        print("SOA detected")
-                        return None
-                    nsIpAddress = InetAddr.fromNetwork(nsResourceRecords[0]._addr).__str__()
-                    print("Data to resolve")
-                    printDeconstructOutgoing(data)
-                    print("Resolved NS IP, now resolve:",question_entry,"using",nsIpAddress)
-                    print("-----------------------NS RECURSIVE CALL----------------")
-                    newServerData = recursiveLookup(data, nsIpAddress)
-                    if(newServerData is not None):
-                        print("Success! Sending response to Client")
-                        printDeconstructOutgoing(newServerData)
-                        return newServerData
-                    else:
-                        continue
+                    if nsServerData is not None:
+                        # print("Got from root")
+                        # printDeconstructOutgoing(nsServerData)
+                        nsHeader,nsQuestionEntry,nsResourceRecords = deconstructData(nsServerData)
+                        if(len(nsResourceRecords) == 0):
+                            continue
+                        if(nsResourceRecords[0]._type==RR.TYPE_SOA):
+                            # print("SOA detected")
+                            return None
+                        nsIpAddress = str(InetAddr.fromNetwork(nsResourceRecords[0]._addr))
+                        # print("Data to resolve")
+                        printDeconstructOutgoing(data)
+                        # print("Resolved NS IP, now resolve:",question_entry,"using",nsIpAddress)
+                        # print("-----------------------NS RECURSIVE CALL----------------")
+                        newServerData = recursiveLookup(data, nsIpAddress)
+                        if(newServerData is not None):
+                            # print("Success! Sending response to Client")
+                            # printDeconstructOutgoing(newServerData)
+                            return newServerData
+                        else:
+                            continue
                 elif(record._type == RR.TYPE_SOA):
-                    print("SOA detected, returning...")
+                        # print("SOA detected, returning...")
                     return serverData
+                else:   
+                    continue
 
     print("Literally nothing can be done")
     returnRecord = EMPTY_RESOURCE_RECORD
@@ -469,8 +469,8 @@ while 1:
 
 
     reply = serverData
-    print("My reply is")
-    printDeconstructOutgoing(serverData)
+    # print("My reply is")
+    # printDeconstructOutgoing(serverData)
     if not reply:
         print("NO DATA FOUND")
         ss.sendto(b'hello',client_address)
@@ -478,5 +478,5 @@ while 1:
         logger.log(DEBUG2, "our reply in full:")
         logger.log(DEBUG2, hexdump(reply))
         ss.sendto(reply, client_address)
-    print("Count is",count)
+    # print("Count is",count)
     
