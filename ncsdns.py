@@ -21,7 +21,7 @@ count = 0
 EMPTY_RESOURCE_RECORD = None
 
 # timeout in seconds to wait for reply
-TIMEOUT = 5
+TIMEOUT = 2.5
 
 # domain name and internet address of a root name server
 ROOTNS_DN = "f.root-servers.net."
@@ -106,8 +106,14 @@ pp = pprint.PrettyPrinter(indent=3)
 acache = RR_A_Cache()
 acache.put(DomainName(ROOTNS_DN),InetAddr(ROOTNS_IN_ADDR),expiration=MAXINT,authoritative=True)
 
+# Just for testing purposes
+acache.put(DomainName("www.google.com"),InetAddr("172.217.169.36"),expiration=MAXINT,authoritative=False)
+
+
 nscache = RR_NS_Cache()
 nscache.put(DomainName("."),DomainName(ROOTNS_DN),expiration=MAXINT,authoritative=True)
+
+nscache.put(DomainName("google.com"),DomainName("ns2.google.com"),expiration=MAXINT,authoritative=True)
 
 cnamecache = CN_Cache()
 
@@ -199,13 +205,16 @@ def printDeconstructOutgoing(data):
         except struct.error as error:
             break
     
-    print(header)
-    print(question_entry)
+    print(header,"\n")
+    print(question_entry,"\n")
     for resource_record in resource_records:
         if(resource_record[0]._type == 1):
-            print("authoritative record", resource_record[0])
+            print("authoritative record\n", resource_record[0])
         elif(resource_record[0]._type == 2):
-            print("name server record", resource_record[0])
+            print("name server record\n", resource_record[0])
+        elif(resource_record[0]._type == RR.TYPE_CNAME):
+            print("canonical_name record\n",resource_record[0])
+
         
 
 
@@ -255,19 +264,71 @@ def getRecords(answers,addresses,nameservers,data):
         except Exception as e:
             pass
     return rr_bin
+
+def getAdditionalRecords(nsResourceRecords):
+    additionals = []
+    for record in nsResourceRecords:
+        if record._type == RR.TYPE_A:
+            additionals.append(record)
+    return additionals
+
+
+def extractAddress(resource_records):
+    addresses = []
+    for record in resource_records:
+        if record._type == RR.TYPE_A:
+            addresses.append(record)
+    return addresses
+
+
+def recursiveLookupHelper(data,address):
+    cs.sendto(data,(address,53))
+    try:
+        replyData,replyAddress = cs.recvfrom(512)
+    except timeout:
+        return None
+    return replyData
+
 def recursiveLookup(data,address):
     answers = []
     addresses = []
     nameservers = []
     cnames = []
+
+    ##CACHE
+    # Only for final answer
+    # originalHeader,originalQuery,originalRecords = deconstructData(data)
+    # if acache.contains(originalQuery._dn):
+    #     print("USING FROM Address CACHE")
+    #     ancount = nscount = arcount = 0
+    #     finalRecords = b''
+    #     answer_records = acache.getIpAddresses(originalQuery._dn)
+    #     answers = getAddressFromCache(acache, originalQuery._dn)
+    #         # finalRecords += answer.pack()
+    #     nameservers,additionals = getNameserversFromCache(nscache,originalQuery._dn)
+    #     for record in answers + nameservers + additionals:
+    #         try:
+    #             finalRecords += record.pack()
+    #         except (struct.error , Exception) as e:
+    #             pp.pprint(e)
+    #             continue
+    #     originalHeader = setHeader(originalHeaderlen(answers),len(nameservers),len(additionals),1,0,1,1)
+
+    #     return originalHeader.pack() + originalQuery.pack() + finalRecords
+            
+
     cs.sendto(data,(address,53))
     try:
         (serverData,serverAddress) = cs.recvfrom(512)
-    except timeout:
-        # if int(time()) - now > 2 * TIMEOUT:
-        #     return data
+    except timeout: 
+        if int(time()) - now > 60:
+            return data
         return None
     header,question_entry,resource_records = deconstructData(serverData)
+
+    if header._qdcount > 1:
+        print("CAN'T RESOLVE MULTIPLE QUERIES, EXITING...")
+        return data
 
     if(header._ancount > 0):
         for i in range(header._ancount):
@@ -280,15 +341,23 @@ def recursiveLookup(data,address):
         
         # print("Answers exists already :)")
         answer_record = resource_records[0]
-        if answer_record._type == 1:
+        if answer_record._type == RR.TYPE_A:
+            acache.put(domain_name=answer_record._dn,
+                        ip_addr=str(InetAddr.fromNetwork(answer_record._addr)),
+                        expiration=int(time()) + answer_record._ttl)
             # print("Found an answer! Returning...")
-            
             return serverData
         elif answer_record._type == 5:
+            if cnamecache.contains(answer_record._dn):
+                # TODO method for getting all records
+                pass
+            else:
+                cnamecache.put(answer_record._dn, 
+                                answer_record._cname,
+                                answer_record._ttl+int(time()))
             # print("Canonical record detected:",answer_record)
             address_to_search = str(answer_record._cname)
             # print(address_to_search)
-            
 
             cnameData = constructQuery(header=Header.fromData(data),
                                         domain_name=DomainName(address_to_search),type=QE.TYPE_A) + EMPTY_RESOURCE_RECORD 
@@ -297,8 +366,8 @@ def recursiveLookup(data,address):
 
             if cnameServerData is not None:
                 anscount = arcount = nscount = 0
-                # print("Canonical server data returned for",answer_record,"is")
-                # printDeconstructOutgoing(cnameServerData)
+                print("Canonical server data returned for",answer_record,"is")
+                printDeconstructOutgoing(cnameServerData)
                 cnameHeader,cnameQuestionEntry,cnameResourceRecords = deconstructData(cnameServerData)
                 # print(hexdump(answer_record.pack()))
                 cnameResourceRecordsBin = b''
@@ -316,8 +385,9 @@ def recursiveLookup(data,address):
                 #         cnameResourceRecordsBin = serverData[-(len(answer_record)):]
                 # except Exception as e:
                 #     pass
-                
+                cnt = 0
                 for cnameRecord in cnameResourceRecords:
+                    cnt += 1
                     if cnameRecord._type == RR.TYPE_CNAME:
                         cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
                         anscount += 1
@@ -326,6 +396,20 @@ def recursiveLookup(data,address):
                         anscount += 1
                     else:
                         break
+                    
+                    
+                rem = cnameResourceRecords[cnt:]
+                print("REMAINING RECORDS PLEASE",rem)
+                for cnameRecord in rem:
+                    if cnameRecord._type == RR.TYPE_NS:
+                        cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
+                        nscount += 1
+                    elif cnameRecord._type == RR.TYPE_A:
+                        cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
+                        arcount += 1
+
+                    
+
                     
                 # cnameFinalRecord = cnameResourceRecords[0]
                 # cnameResourceRecordsBin += cnameFinalRecord.pack()
@@ -347,6 +431,7 @@ def recursiveLookup(data,address):
                 
                 cnameHeader._aa = False
                 cnameHeader._ra = True 
+                cnameHeader._qr = 1
                 cnameHeader._ancount = anscount
                 cnameHeader._nscount = nscount
                 cnameHeader._arcount = arcount
@@ -363,35 +448,88 @@ def recursiveLookup(data,address):
                                 
     else:
         flag = 0
+        ns = []
+        add = []
+        for resource_record in resource_records:
+            if resource_record._type == RR.TYPE_NS:
+                ns.append(resource_record)
+            elif resource_record._type == RR.TYPE_A:
+                add.append(resource_record)
+
+        # x = 0
+        # i = 0
+        # finalDataAns = b''
+        # addresses_try = []
+        # address_try = str(InetAddr.fromNetwork(add[i]._addr))
+        # i += 1
+        # while x == 0:
+        #     newServerData = recursiveLookupHelper(data, address_try)
+            
+        #     if newServerData is None:
+        #         print('NONE RETURNED')
+        #         address_try = str(InetAddr.fromNetwork(add[i]._addr))
+        #         print("NEW ADDR",address_try)
+        #         i += 1
+        #         continue
+        #     printDeconstructOutgoing(newServerData)
+        #     header,question_entry,rrs = deconstructData(newServerData)
+        #     if header._ancount > 0:
+        #         x = 1
+        #         finalDataAns = newServerData
+        #         break
+        #     else:
+        #         print('heere pelase help')
+        #         addresses_try = extractAddress(rrs)
+        #         address_try = str(InetAddr.fromNetwork(addresses_try[0]._addr))
+        #         print(address_try)
+        #         continue
+        #         # if address_try == None:
+        #         #     address_try = extractAddressNS(resource_records)
+        # if finalDataAns != b'':
+        #     return finalDataAns
+
+
+                
+
+
         for record in resource_records:
             if record._type == RR.TYPE_A:
+                # addresses.append(record)
                 # print("Address Record found is", record)
                 new_address = str(InetAddr.fromNetwork(record._addr))
                 # print("---------------------------RECURSIVE CALL-------------------------------")
                 newServerData = recursiveLookup(data, new_address)
                 if(newServerData is not None):
                     # printDeconstructOutgoing(newServerData)
-                    # h,q,rr = deconstructData(newServerData)
-                    # for i in range(h._ancount):
-                    #     answers.append(rr[i])
-                    # for i in range(h._ancount,len(rr)):
-                    #     if rr[i]._type == RR.TYPE_NS:
-                    #         nameservers.append(rr[i])
-                    #     elif rr[i]._type == RR.TYPE_A:
-                    #         addresses.append(rr[i])
+                    h,q,rr = deconstructData(newServerData)
+                    for i in range(h._ancount):
+                        answers.append(rr[i])
+                    for i in range(h._ancount,len(rr)):
+                        if rr[i]._type == RR.TYPE_NS:
+                            nameservers.append(rr[i])
+                        elif rr[i]._type == RR.TYPE_A:
+                            addresses.append(rr[i])
                     
-                    # # print("Success! Sending response to Client")
+                    addresses.append(record)
+                    for nameserver in ns:
+                        if str(record._dn) == str(nameserver._nsdn):
+                            if nameserver not in nameservers:
+                                nameservers.append(nameserver)
+                            break
+
+                    # print("Success! Sending response to Client")
                     
-                    # flag = 1
-                    # h._ancount = len(answers)
-                    # h._nscount = len(nameservers)
-                    # h._arcount = len(addresses)
-                    # h._aa = False
-                    # h._ra = True
-                    # rr_bin = getRecords(answers,addresses,nameservers,newServerData)
-                    # pp.pprint(answers)
+                    flag = 1
+                    h._ancount = len(answers)
+                    h._nscount = len(nameservers)
+                    h._arcount = len(addresses)
+                    h._aa = False
+                    h._ra = True
+                    h._ar = 1
+                    rr_bin = getRecords(answers,addresses,nameservers,newServerData)
+                    pp.pprint(answers)
                     # printDeconstructOutgoing(h.pack() + question_entry.pack() + rr_bin)
-                    return newServerData
+                    return h.pack() + question_entry.pack() + rr_bin
                     # return newServerData
                 else:
                     print("DIDNT GET ANYTHING BACK, continue")
@@ -403,6 +541,7 @@ def recursiveLookup(data,address):
         if flag == 0:
             for record in resource_records:
                 if(record._type == RR.TYPE_NS):
+                    # nameservers.append(record)
                     new_address = str(record._nsdn)
                     # print("SEARCH FOR", new_address)
                     nsData = constructQuery(header= Header.fromData(data),
@@ -418,16 +557,78 @@ def recursiveLookup(data,address):
                         if(nsResourceRecords[0]._type==RR.TYPE_SOA):
                             # print("SOA detected")
                             return None
-                        nsIpAddress = str(InetAddr.fromNetwork(nsResourceRecords[0]._addr))
+                        nsIpAddress = ROOTNS_IN_ADDR
+                        if nsHeader._ancount == 0:
+                            print("MAA KI CHUT")
+                            continue
+                            ## WHY DO I CODE LIKE THIS
+                            # if nsHeader._arcount > 0:
+                            #     print("TERI MAA KA BHOSDA SAALE")
+                            #     additionals = getAdditionalRecords(nsResourceRecords)
+                            #     for additional in additionals:
+                            #         nsIpAddress = str(InetAddr.fromNetwork(additional._addr))
+                            #         printDeconstructOutgoing(data)
+                            #         newServerData = recursiveLookup(data, nsIpAddress)
+                            #         if(newServerData is not None):
+                            #             h,q,rr = deconstructData(newServerData)
+                            #             for i in range(h._ancount):
+                            #                 answers.append(rr[i])
+                            #             for i in range(h._ancount,len(rr)):
+                            #                 if rr[i]._type == RR.TYPE_NS:
+                            #                     nameservers.append(rr[i])
+                            #                 elif rr[i]._type == RR.TYPE_A:
+                            #                     addresses.append(rr[i])
+                            #             flag = 1
+                            #             h._ancount = len(answers)
+                            #             h._nscount = len(nameservers)
+                            #             h._arcount = len(addresses)
+                            #             h._aa = False
+                            #             h._ra = True
+                            #             rr_bin = getRecords(answers,addresses,nameservers,newServerData)
+                            #             pp.pprint(answers)
+                            #             # printDeconstructOutgoing(h.pack() + question_entry.pack() + rr_bin)
+                            #             return h.pack() + question_entry.pack() + rr_bin
+                            #         else:
+                            #             continue
+                        else:
+                            nsIpAddress = str(InetAddr.fromNetwork(nsResourceRecords[0]._addr))
+                            # print("Success! Sending response to Client")
+                        # nsIpAddress = str(InetAddr.fromNetwork(nsResourceRecords[0]._addr))
+                        
+                            
                         # print("Data to resolve")
                         printDeconstructOutgoing(data)
                         # print("Resolved NS IP, now resolve:",question_entry,"using",nsIpAddress)
                         # print("-----------------------NS RECURSIVE CALL----------------")
                         newServerData = recursiveLookup(data, nsIpAddress)
                         if(newServerData is not None):
+                            h,q,rr = deconstructData(newServerData)
+                            for i in range(h._ancount):
+                                answers.append(rr[i])
+                            for i in range(h._ancount,len(rr)):
+                                if rr[i]._type == RR.TYPE_NS:
+                                    nameservers.append(rr[i])
+                                elif rr[i]._type == RR.TYPE_A:
+                                    addresses.append(rr[i])
+                            
+                            # print("Success! Sending response to Client")
+                            
+                            flag = 1
+                            h._ancount = len(answers)
+                            h._nscount = len(nameservers)
+                            h._arcount = len(addresses)
+                            h._aa = False
+                            h._ra = True
+                            h._qr = 1
+                            rr_bin = getRecords(answers,addresses,nameservers,newServerData)
+                            pp.pprint(answers)
+                            # printDeconstructOutgoing(h.pack() + question_entry.pack() + rr_bin)
+                            return h.pack() + question_entry.pack() + rr_bin
+                            # return newServerData
+                            
                             # print("Success! Sending response to Client")
                             # printDeconstructOutgoing(newServerData)
-                            return newServerData
+                            # return newServerData
                         else:
                             continue
                 elif(record._type == RR.TYPE_SOA):
