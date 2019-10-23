@@ -52,6 +52,19 @@ class RR_A_Cache:
     def __str__(self):
         return str(self.cache)
 
+    def deleteExpiredRecords(self,originalTime):
+        for domain_name in self.cache.keys():
+            flag = 0
+            for ip_addr in self.cache[domain_name].keys():
+                if self.cache[domain_name][ip_addr][0] < int(time()) - originalTime:
+                    self.cache.pop(domain_name,None)
+                    flag = 1
+                    break
+            if flag == 1:
+                break
+
+    
+
 class CN_Cache:
     def __init__(self):
         self.cache = dict()     # domain_name -> (cname, expiration_time)
@@ -70,6 +83,14 @@ class CN_Cache:
 
     def __str__(self):
         return str(self.cache)
+
+    def deleteExpiredRecords(self,originalTime):
+        for domain_name in self.cache.keys():
+            if self.cache[domain_name][1] < int(time()) - originalTime:
+                self.cache.pop(domain_name,None)
+                break
+
+
 
 class RR_NS_Cache:
     def __init__(self):
@@ -98,13 +119,14 @@ class RR_NS_Cache:
 # Seed random number generator with current time of day:
 now = int(time())
 seed(now)
+newQueryTime = int(time())
 
 # Initialize the pretty printer:
 pp = pprint.PrettyPrinter(indent=3)
 
 # Initialize the cache data structures
 acache = RR_A_Cache()
-acache.put(DomainName(ROOTNS_DN),InetAddr(ROOTNS_IN_ADDR),expiration=MAXINT,authoritative=True)
+# acache.put(DomainName(ROOTNS_DN),InetAddr(ROOTNS_IN_ADDR).toNetwork(),expiration=MAXINT,authoritative=True)
 
 # Just for testing purposes
 # acache.put(DomainName("www.google.com"),InetAddr("172.217.169.36"),expiration=172800,authoritative=False)
@@ -277,10 +299,20 @@ def extractAddress(resource_records):
     return addresses
 
 def getAddressFromCache(acache,domain_name):
-    if acache.contains(domain_name):        
+    if acache.contains(domain_name):   
         list_addresses = acache.getIpAddresses(domain_name)
-        addresses = list(map(lambda x: RR_A(domain_name,acache.getExpiration(domain_name,x),x),list_addresses))
-        print(RR_A(domain_name,acache.getExpiration(domain_name,list_addresses[0]),list_addresses[0]))
+        final_addresses = []
+        for address in list_addresses:
+            if acache.getExpiration(domain_name,address) >= (int(time()) - now):
+                final_addresses.append(address)
+            else:
+                continue
+        print("LIST ADDRESS WITHOUT RR_A",list_addresses)
+        print(RR_A(domain_name,acache.getExpiration(domain_name,list_addresses[0]), list_addresses[0]))
+        addresses = list(map(lambda x: RR_A(domain_name,acache.getExpiration(domain_name,x), x),final_addresses))
+        # print(RR_A(domain_name,acache.getExpiration(domain_name,list_addresses[0]),list_addresses[0]))
+        for address in addresses:
+            print("ADDRESS CACHED IS",address)
         # print(addresses)
         return addresses
     return []
@@ -288,16 +320,44 @@ def getAddressFromCache(acache,domain_name):
 
 
 def getNameserversFromCache(nscache,acache,domain_name):
-    if nscache.contains(domain_name):
-        name_servers_domains = nscache.get(domain_name)
-        additonals = []
-        for domain in name_servers_domains:
-            addresses = getAddressFromCache(acache,domain)
-            additonals.extend(addresses)
-        nameservers = list(map(lambda x : RR_NS(domain_name,x[1],x[0]),name_servers_domains))
-        print(nameservers,additonals)
-        return nameservers,additonals
-    return [],[]
+    parents = []
+    # parents.append(domain_name)
+    parent_domain_name = domain_name.parent()
+    while str(parent_domain_name) != "." :
+            parents.append(parent_domain_name)
+            parent_domain_name = parent_domain_name.parent()
+    print("PARENTS ARE")
+    pp.pprint(parents)
+    additionals = []
+    nameservers = []
+    # name_servers_domains = []
+    # parents = parents[:len(parents)-1]
+    for parent in parents:
+        if nscache.contains(parent):
+            name_servers_domains = []
+            print("Entering an NS into NSCACHE")
+            name_servers_domains = nscache.get(parent)
+            ns_temp = []
+            # additonals = []
+            for domain in name_servers_domains:
+                # print("DOMAIN IS",type(domain[0]))
+                # print(acache)
+                if not acache.contains(domain[0]):
+                    continue
+                addresses = getAddressFromCache(acache,domain[0])
+                ns_temp.append(domain)
+                # print("DOMAIN OBJECT MAA HELP",domain)
+                # print("SAALA CHUTIYA",addresses)
+                additionals.extend(addresses)
+                # RR_NS(domain_name,x[1],x[0])
+            # print("BEHEN KA TAKKA",name_servers_domains)
+            nameservers.extend(list(map(lambda x : RR_NS(parent,x[1],x[0]),ns_temp)))
+
+    # print("NAME SERVERS GOT ARE",name_servers_domains)
+    # nameservers = list(map(lambda x : RR_NS(parent,x[1],x[0]),name_servers_domains))
+    print(nameservers)
+    print(additionals)
+    return nameservers,additionals
             
 
 def putAddressInCache(acache,record):
@@ -317,29 +377,57 @@ def putInCache(record):
     elif record._type == RR.TYPE_NS:
         nscache.put(record._dn,record._nsdn,record._ttl ,True)
 
+def findMoreCnames(cname):
+    temp = cname
+    cnames = []
+    while cnamecache.contains(temp):        
+        # if cnamecache.contains(temp):
+            newCname = cnamecache.getCanonicalName(temp)
+            cnames.append(RR_CNAME(temp,cnamecache.getCanonicalNameExpiration(temp),newCname))
+            temp = newCname
 
+    return cnames
 
+def packRecords(records):
+    recordBin = b''
+    for record in records:
+        recordBin += record.pack()
+
+    return recordBin
 
 def recursiveLookup(data,address):
     answers = []
     addresses = []
     nameservers = []
     cnames = []
-
     # CACHE
     # Only for final answer
+
+    
+
+
     originalHeader,originalQuery,originalRecords = deconstructData(data)
+
+    if int(time()) - newQueryTime > 50:
+        print("TOOK A LOT OF TIME")
+        originalHeader._rcode = Header.RCODE_SRVFAIL
+        originalHeader._ra = 1
+        return originalHeader.pack() + originalQuery.pack() + packRecords(originalRecords)
+
     if acache.contains(originalQuery._dn):
         print("USING FROM ADDRESS CACHE")
-        
+        # sleep(1)
         finalRecords = b''
         answers = getAddressFromCache(acache, originalQuery._dn)
+        print("DID I ACTUALLY GET THE ANSWERS?",answers)
         if len(answers) > 0: 
             # finalRecords += answer.pack()
             nameservers,additionals = getNameserversFromCache(nscache,acache,originalQuery._dn)
             print("answers are",answers,type(answers))
             print("nameservers are",nameservers)
-            print("additionals are",additionals)
+            # print("additionals are",additionals)
+
+            originalHeader._ancount = len(answers)
             if len(nameservers) > 0:
                 answers.extend(nameservers)
             if len(answers) > 0:
@@ -352,14 +440,15 @@ def recursiveLookup(data,address):
                     pp.pprint(e)
                     continue
 
-            originalHeader._ancount = len(answers)
+
+            # originalHeader._ancount = len(answers)
             originalHeader._nscount = len(nameservers)
             originalHeader._arcount = len(additionals)
             originalHeader._qr = 1
             originalHeader._aa = 0
             originalHeader._ra = 1
 
-            printDeconstructOutgoing(originalHeader.pack() + originalQuery.pack() + finalRecords)
+            # printDeconstructOutgoing(originalHeader.pack() + originalQuery.pack() + finalRecords)
             return originalHeader.pack() + originalQuery.pack() + finalRecords
             
 
@@ -370,7 +459,7 @@ def recursiveLookup(data,address):
         # if int(time()) - now > 60:
         #     return data
         return None
-    printDeconstructOutgoing(serverData)
+    # printDeconstructOutgoing(serverData)
     header,question_entry,resource_records = deconstructData(serverData)
 
     if header._qdcount > 1:
@@ -383,10 +472,10 @@ def recursiveLookup(data,address):
         for i in range(header._ancount,len(resource_records)):
             if resource_records[i]._type == RR.TYPE_NS:
                 nameservers.append(resource_records[i])
-                putNSInCache(nscache,resource_records[i])
+                putInCache(resource_records[i])
             elif resource_records[i]._type == RR.TYPE_A:
                 addresses.append(resource_records[i])
-                putAddressInCache(acache,resource_records[i])
+                putInCache(resource_records[i])
 
         
         # print("Answers exists already :)")
@@ -395,9 +484,101 @@ def recursiveLookup(data,address):
             # print("Found an answer! Returning...")
             return serverData
         elif answer_record._type == 5:
-            if cnamecache.contains(answer_record._dn):
-                # TODO method for getting all records
-                pass
+            if cnamecache.contains(answer_record._dn) and cnamecache.getCanonicalNameExpiration(answer_record._dn) >= int(time()) - now:
+                # pass
+                cname = cnamecache.getCanonicalName(answer_record._dn)
+                furtherCnames = findMoreCnames(cname)
+                cname_addresses = []
+
+                print("MORE CNAMES ARE",furtherCnames)
+                if len(furtherCnames) == 0:
+                    print("THIS IS ONLY CNAME, NOW GET ANSWER AND NS")
+                    
+                    cname_addresses.extend(getAddressFromCache(acache,cname))
+                    if len(cname_addresses) > 0:
+                        cname_addresses.insert(0,answer_record)
+                        print("WE GOT ADDRESSES BITCHES")
+                        cname_nameservers,cname_additionals = getNameserversFromCache(nscache,acache,cname)
+                        cname_cache_bin = getRecords(cname_addresses,cname_additionals,cname_nameservers,data)
+
+                        originalHeader._ancount = len(cname_addresses)
+                        originalHeader._nscount = len(cname_nameservers)
+                        originalHeader._arcount = len(cname_additionals)
+                        originalHeader._qr = 1
+                        originalHeader._aa = 0
+                        originalHeader._ra = 1
+                        originalHeader._rd = 0
+
+                        # print("BOHOT ZYADA HARD")
+
+                        # printDeconstructOutgoing(originalHeader.pack() + originalQuery.pack() + cname_cache_bin)
+
+                        return originalHeader.pack() + originalQuery.pack() + cname_cache_bin
+
+                    else:
+                        pass
+
+                else:
+                    try:
+
+                        cflag = 0
+                        cname_addresses.extend(furtherCnames)
+
+                        cname_addresses.extend(getAddressFromCache(acache,cname))
+                        cname_nameservers,cname_additionals = getNameserversFromCache(nscache,acache,cname)
+
+                        for furtherCname in furtherCnames:
+
+                            # print("LOOK FOR THE CNAME",cname,"FOR ADDRESSES")
+                            if(len(getAddressFromCache(acache,furtherCname._cname)) > 0):
+                                cflag = 1
+
+                            else:
+                                qec = furtherCnames[-1]._dn
+                                query = constructQuery(originalHeader,qec,QE.TYPE_A) + EMPTY_RESOURCE_RECORD
+                                cnameCacheData = recursiveLookup(query,ROOTNS_IN_ADDR)
+                                ch,cq,crr = deconstructData(cnameCacheData)
+                                ch._ancount += len(furtherCnames)
+                                crr_bin = b''
+                                for furtherCname in furtherCnames:
+                                    crr_bin += furtherCname.pack()
+                                for cr in crr:
+                                    crr_bin += cr.pack()
+
+                                return ch.pack() + cq.pack() + crr_bin
+
+                            cname_addresses.extend(getAddressFromCache(acache,furtherCname._cname))
+                            cname_nameservers_temp,cname_additionals_temp = getNameserversFromCache(nscache,acache,furtherCname._cname)
+                            cname_additionals.extend(cname_additionals_temp)
+                            cname_nameservers.extend(cname_nameservers_temp)
+
+
+                        cname_addresses.insert(0,answer_record)
+                        print("FINAL CNAME ADDRS ARE",cname_addresses)
+                        cname_cache_bin = getRecords(cname_addresses,cname_additionals,cname_nameservers,data)
+
+                        originalHeader._ancount = len(cname_addresses)
+                        originalHeader._nscount = len(cname_nameservers)
+                        originalHeader._arcount = len(cname_additionals)
+                        originalHeader._qr = 1
+                        originalHeader._aa = 0
+                        originalHeader._ra = 1
+                        originalHeader._rd = 0
+
+                        # print("BOHOT BOHOT ZYADA HARD")
+                        
+                        # printDeconstructOutgoing(originalHeader.pack() + originalQuery.pack() + cname_cache_bin)
+                        if cflag == 1:
+                            return originalHeader.pack() + originalQuery.pack() + cname_cache_bin
+                        else:
+                            print("NEED TO SEARCH SOME CNAME BS")
+                            pass
+
+                    except (struct.error,error,Exception) as e:
+                        pass
+
+
+
             else:
                 putInCache(answer_record)
             # print("Canonical record detected:",answer_record)
@@ -411,7 +592,7 @@ def recursiveLookup(data,address):
             if cnameServerData is not None:
                 anscount = arcount = nscount = 0
                 print("Canonical server data returned for",answer_record,"is")
-                printDeconstructOutgoing(cnameServerData)
+                # printDeconstructOutgoing(cnameServerData)
                 cnameHeader,cnameQuestionEntry,cnameResourceRecords = deconstructData(cnameServerData)
                 # print(hexdump(answer_record.pack()))
                 cnameResourceRecordsBin = b''
@@ -420,29 +601,37 @@ def recursiveLookup(data,address):
                
                 cnt = 0
                 for cnameRecord in cnameResourceRecords:
-                    cnt += 1
+                    
                     if cnameRecord._type == RR.TYPE_CNAME:
                         cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
                         anscount += 1
                         putInCache(cnameRecord)
                     elif cnameRecord._type == RR.TYPE_A:
-                        putAddressInCache(acache,cnameRecord)
+                        putInCache(cnameRecord)
                         cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
-                        anscount += 1
-                        
+                        anscount += 1 
                     else:
                         break
+                    cnt += 1
                     
-                    
+                # for cnameRecord in cnameResourceRecords:
+                #     if cnameRecord._type == RR.TYPE_NS:
+                #         cnameResourceRecordsBin += cnameRecord.pack()
+
+                # for i in range(cnameHeader._ancount+cnameHeader._nscount,len(cnameResourceRecords)):
+                #     cnameResourceRecordsBin += cnameResourceRecords[i]
+
                 rem = cnameResourceRecords[cnt:]
                 print("REMAINING RECORDS PLEASE",rem)
                 for cnameRecord in rem:
                     if cnameRecord._type == RR.TYPE_NS:
                         cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
                         nscount += 1
+                        putInCache(cnameRecord)
                     elif cnameRecord._type == RR.TYPE_A:
                         cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
                         arcount += 1
+                        putInCache(cnameRecord)
 
                 
                 oldQuestionDomain = question_entry._dn
@@ -450,15 +639,16 @@ def recursiveLookup(data,address):
                 cnameQuestionEntry = QE(type=QE.TYPE_A,dn=oldQuestionDomain)
 
                 
-                cnameHeader._aa = False
-                cnameHeader._ra = True 
+                cnameHeader._aa = 0
+                cnameHeader._ra = 1 
                 cnameHeader._qr = 1
                 cnameHeader._ancount = anscount
                 cnameHeader._nscount = nscount
                 cnameHeader._arcount = arcount
+                cnameHeader._rd = 0
 
                 newCnameServerData = cnameHeader.pack() + cnameQuestionEntry.pack() + cnameResourceRecordsBin
-                # print("New data returned should be:")
+                print("New data returned should be:")
                 # printDeconstructOutgoing(newCnameServerData)
 
                 return newCnameServerData
@@ -474,8 +664,10 @@ def recursiveLookup(data,address):
         for resource_record in resource_records:
             if resource_record._type == RR.TYPE_NS:
                 ns.append(resource_record)
+                putInCache(resource_record)
             elif resource_record._type == RR.TYPE_A:
                 add.append(resource_record)
+                putInCache(resource_record)
 
         for record in resource_records:
             if record._type == RR.TYPE_A:
@@ -513,9 +705,10 @@ def recursiveLookup(data,address):
                     h._ancount = len(answers)
                     h._nscount = len(nameservers)
                     h._arcount = len(addresses)
-                    h._aa = False
-                    h._ra = True
+                    h._aa = 0
+                    h._ra = 1
                     h._qr = 1
+                    h._rd = 1
                     rr_bin = getRecords(answers,addresses,nameservers,newServerData)
                     pp.pprint(answers)
                     # printDeconstructOutgoing(h.pack() + question_entry.pack() + rr_bin)
@@ -527,7 +720,7 @@ def recursiveLookup(data,address):
 
             if flag == 1:
                 break
-
+ 
         if flag == 0:
             for record in resource_records:
                 if(record._type == RR.TYPE_NS):
@@ -547,40 +740,11 @@ def recursiveLookup(data,address):
                             continue
                         if(nsResourceRecords[0]._type==RR.TYPE_SOA):
                             # print("SOA detected")
-                            return None
+                            return None # TODO IS THIS CORRECT? SHOULDNT I CONTINUE????
                         nsIpAddress = ROOTNS_IN_ADDR
                         if nsHeader._ancount == 0:
                             print("MAA KI CHUT")
                             continue
-                            ## WHY DO I CODE LIKE THIS
-                            # if nsHeader._arcount > 0:
-                            #     print("TERI MAA KA BHOSDA SAALE")
-                            #     additionals = getAdditionalRecords(nsResourceRecords)
-                            #     for additional in additionals:
-                            #         nsIpAddress = str(InetAddr.fromNetwork(additional._addr))
-                            #         printDeconstructOutgoing(data)
-                            #         newServerData = recursiveLookup(data, nsIpAddress)
-                            #         if(newServerData is not None):
-                            #             h,q,rr = deconstructData(newServerData)
-                            #             for i in range(h._ancount):
-                            #                 answers.append(rr[i])
-                            #             for i in range(h._ancount,len(rr)):
-                            #                 if rr[i]._type == RR.TYPE_NS:
-                            #                     nameservers.append(rr[i])
-                            #                 elif rr[i]._type == RR.TYPE_A:
-                            #                     addresses.append(rr[i])
-                            #             flag = 1
-                            #             h._ancount = len(answers)
-                            #             h._nscount = len(nameservers)
-                            #             h._arcount = len(addresses)
-                            #             h._aa = False
-                            #             h._ra = True
-                            #             rr_bin = getRecords(answers,addresses,nameservers,newServerData)
-                            #             pp.pprint(answers)
-                            #             # printDeconstructOutgoing(h.pack() + question_entry.pack() + rr_bin)
-                            #             return h.pack() + question_entry.pack() + rr_bin
-                            #         else:
-                            #             continue
                         else:
                             nsIpAddress = str(InetAddr.fromNetwork(nsResourceRecords[0]._addr))
                             # print("Success! Sending response to Client")
@@ -588,7 +752,7 @@ def recursiveLookup(data,address):
                         
                             
                         # print("Data to resolve")
-                        printDeconstructOutgoing(data)
+                        # printDeconstructOutgoing(data)
                         # print("Resolved NS IP, now resolve:",question_entry,"using",nsIpAddress)
                         # print("-----------------------NS RECURSIVE CALL----------------")
                         newServerData = recursiveLookup(data, nsIpAddress)
@@ -614,6 +778,7 @@ def recursiveLookup(data,address):
                             h._aa = False
                             h._ra = True
                             h._qr = 1
+                            h._rd = 0
                             rr_bin = getRecords(answers,addresses,nameservers,newServerData)
                             pp.pprint(answers)
                             # printDeconstructOutgoing(h.pack() + question_entry.pack() + rr_bin)
@@ -633,6 +798,7 @@ def recursiveLookup(data,address):
 
     print("Literally nothing can be done")
     returnRecord = EMPTY_RESOURCE_RECORD
+    header._rcode = Header.RCODE_SRVFAIL
     return header.pack() + question_entry.pack() + returnRecord
 
 # This is a simple, single-threaded server that takes successive
@@ -657,7 +823,17 @@ while 1:
 
     # recursiveLookup(data)
     EMPTY_RESOURCE_RECORD = getEmptyRecord(data)
-    serverData = recursiveLookup(data,ROOTNS_IN_ADDR)
+
+    newQueryTime = int(time())
+    acache.deleteExpiredRecords(now)
+    cnamecache.deleteExpiredRecords(now)
+    sleep(51)
+    try:
+        serverData = recursiveLookup(data,ROOTNS_IN_ADDR)
+    except (Exception,struct.error,error) as e:
+        header,question_entry,resource_records = deconstructData(data)
+        header._rcode = Header.RCODE_SRVFAIL
+        serverData = header.pack() + question_entry.pack() + EMPTY_RESOURCE_RECORD
     # print("Data returned is")
     # printDeconstructOutgoing(serverData)
 
@@ -667,8 +843,8 @@ while 1:
     print(acache,"\n")
     print(nscache,"\n")
     print(cnamecache,"\n")
-    # print("My reply is")
-    # printDeconstructOutgoing(serverData)
+    print("My reply is")
+    printDeconstructOutgoing(serverData)
     if not reply:
         print("NO DATA FOUND")
         ss.sendto(data,client_address)
