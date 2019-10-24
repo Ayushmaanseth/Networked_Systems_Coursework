@@ -287,8 +287,7 @@ def getRecords(answers,addresses,nameservers,data):
         try:
             rr_bin += r.pack()
         except (struct.error,Exception) as e:
-            header,question_entry,resource_records = deconstructData(data)
-            rr_bin += data[len(header)+len(question_entry):]
+            pass
         
     for r in nameservers:
         try:
@@ -454,7 +453,10 @@ def packRecords(records):
 
     recordBin = b''
     for record in records:
-        recordBin += record.pack()
+        try:
+            recordBin += record.pack()
+        except struct.error:
+            pass
 
     return recordBin
 
@@ -471,7 +473,7 @@ def recursiveLookup(data,address):
 
 
     originalHeader,originalQuery,originalRecords = deconstructData(data)
-
+    print("ORIGINAL are",originalRecords)
     # If query took more than 50 seconds, returns server fail
     if int(time()) - newQueryTime > 50:
         """
@@ -480,10 +482,11 @@ def recursiveLookup(data,address):
         print("TOOK A LOT OF TIME")
         originalHeader._rcode = Header.RCODE_SRVFAIL
         originalHeader._ra = 1
+        originalHeader._aa = 0
+        originalHeader._qr = 1
         return originalHeader.pack() + originalQuery.pack() + packRecords(originalRecords)
 
     #If answer already in cache, extract from cache
-
     if acache.contains(originalQuery._dn):
         
         finalRecords = b''
@@ -538,6 +541,13 @@ def recursiveLookup(data,address):
         return None
     
     header,question_entry,resource_records = deconstructData(serverData)
+    if header._rcode == Header.RCODE_NAMEERR or header._rcode == Header.RCODE_SRVFAIL:
+        originalHeader._rcode = Header.RCODE_SRVFAIL
+        originalHeader._ra = 1
+        originalHeader._aa = 0
+        originalHeader._qr = 1
+        print(originalRecords)
+        return originalHeader.pack() + originalQuery.pack() + EMPTY_RESOURCE_RECORD
 
     if header._qdcount > 1:
         print("CAN'T RESOLVE MULTIPLE QUERIES, EXITING...")
@@ -589,6 +599,10 @@ def recursiveLookup(data,address):
                         cname_nameservers,cname_additionals = getNameserversFromCache(nscache,acache,cname)
                         cname_cache_bin = getRecords(cname_addresses,cname_additionals,cname_nameservers,data)
 
+                        """
+                        Set appropriate header attrubutes w.r.t number of records
+                        of each type (ancount,nscount and arcount)
+                        """
                         originalHeader._ancount = len(cname_addresses)
                         originalHeader._nscount = len(cname_nameservers)
                         originalHeader._arcount = len(cname_additionals)
@@ -655,6 +669,7 @@ def recursiveLookup(data,address):
 
                         cname_addresses.insert(0,answer_record)
                         # print("FINAL CNAME ADDRS ARE",cname_addresses)
+
                         cname_cache_bin = getRecords(cname_addresses,cname_additionals,cname_nameservers,data)
 
                         """
@@ -699,11 +714,18 @@ def recursiveLookup(data,address):
             cnameServerData = recursiveLookup(cnameData,ROOTNS_IN_ADDR)
 
             if cnameServerData is not None:
+                """
+                Data got is not empty, form the answer by packing the data
+                and return the answer
+                """
                 anscount = arcount = nscount = 0
                 cnameHeader,cnameQuestionEntry,cnameResourceRecords = deconstructData(cnameServerData)
     
                 cnameResourceRecordsBin = b''
-                cnameResourceRecordsBin += answer_record.pack()
+                try:
+                    cnameResourceRecordsBin += answer_record.pack()
+                except struct.error:
+                    pass
                 anscount += 1
                
                 cnt = 0
@@ -711,18 +733,22 @@ def recursiveLookup(data,address):
                     """
                     Pack cnames in binary
                     """
-                    
-                    if cnameRecord._type == RR.TYPE_CNAME:
-                        cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
-                        anscount += 1
-                        putInCache(cnameRecord)
-                    elif cnameRecord._type == RR.TYPE_A:
-                        putInCache(cnameRecord)
-                        cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
-                        anscount += 1 
-                    else:
-                        break
-                    cnt += 1
+                    try:
+                        if cnameRecord._type == RR.TYPE_CNAME:
+                            cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
+                            anscount += 1
+                            putInCache(cnameRecord)
+                        elif cnameRecord._type == RR.TYPE_A:
+                            putInCache(cnameRecord)
+                            cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
+                            anscount += 1 
+                        else:
+                            break
+                        cnt += 1
+
+                    except struct.error:
+                        continue
+
                     
                 """
                 Pack authorities and glue records in binary
@@ -730,14 +756,19 @@ def recursiveLookup(data,address):
                 rem = cnameResourceRecords[cnt:]
                 # print("REMAINING RECORDS PLEASE",rem)
                 for cnameRecord in rem:
-                    if cnameRecord._type == RR.TYPE_NS:
-                        cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
-                        nscount += 1
-                        putInCache(cnameRecord)
-                    elif cnameRecord._type == RR.TYPE_A:
-                        cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
-                        arcount += 1
-                        putInCache(cnameRecord)
+                    try:
+
+                        if cnameRecord._type == RR.TYPE_NS:
+                            cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
+                            nscount += 1
+                            putInCache(cnameRecord)
+                        elif cnameRecord._type == RR.TYPE_A:
+                            cnameResourceRecordsBin = cnameResourceRecordsBin + cnameRecord.pack()
+                            arcount += 1
+                            putInCache(cnameRecord)
+
+                    except struct.error:
+                        continue
 
                 
                 oldQuestionDomain = question_entry._dn
@@ -846,11 +877,21 @@ def recursiveLookup(data,address):
             original question entry
             """
             for record in resource_records:
+                """
+                Check all authorities and start resolving them
+                to resolve original query
+                """
                 if(record._type == RR.TYPE_NS):
+                    """
+                    record found is nameserver authority
+                    """
                     putInCache(record)
                     # nameservers.append(record)
                     new_address = str(record._nsdn)
                     # print("SEARCH FOR", new_address)
+                    """
+                    Construct query
+                    """
                     nsData = constructQuery(header= Header.fromData(data),
                                             domain_name=DomainName(new_address),type=QE.TYPE_A) + EMPTY_RESOURCE_RECORD
                     """-----------------------NS RECURSIVE CALL----------------)"""
@@ -893,6 +934,10 @@ def recursiveLookup(data,address):
                         """----------------RECURSIVE CALL TO RESOLVE ORIGINAL QUESTION----------------"""
                         newServerData = recursiveLookup(data, nsIpAddress)
                         if(newServerData is not None):
+                            """
+                            Get header, question entry and resource records
+                            Put in cache as well
+                            """
                             h,q,rr = deconstructData(newServerData)
                             for i in range(h._ancount):
                                 answers.append(rr[i])
@@ -948,7 +993,10 @@ def recursiveLookup(data,address):
     """
     Server tried everything but failed to resolve, return SERV_FAIL RCODE in Header
     """
-    returnRecord = EMPTY_RESOURCE_RECORD
+    """
+     EMPTY RECORD just for returning in failures 
+    """
+    returnRecord = EMPTY_RESOURCE_RECORD 
     header._rcode = Header.RCODE_SRVFAIL
     return header.pack() + question_entry.pack() + returnRecord
 
@@ -973,7 +1021,7 @@ while 1:
     """
     newQueryTime = int(time())
     """
-    Clean up caches 
+    Clean up caches using defined methods
     """
     try:
         acache.deleteExpiredRecords(now)
