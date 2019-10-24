@@ -248,10 +248,6 @@ def printDeconstructOutgoing(data):
         elif(resource_record[0]._type == RR.TYPE_AAAA):
             print("name server record\n", resource_record[0])
 
-        
-
-
-
 def printDeconstructIncoming(data):
 
     """
@@ -604,6 +600,9 @@ def recursiveLookup(data,address):
                         return originalHeader.pack() + originalQuery.pack() + cname_cache_bin
 
                     else:
+                        """
+                        If we could not find any addresses for cnames, resolve manually
+                        """
                         pass
 
                 else:
@@ -940,6 +939,7 @@ def recursiveLookup(data,address):
                     Handling SOA by returning just the original data
                     """
                         # print("SOA detected, returning...")
+                    
                     return serverData
                 else:   
                     continue
@@ -955,6 +955,7 @@ def recursiveLookup(data,address):
 # This is a simple, single-threaded server that takes successive
 # connections with each iteration of the following loop:
 while 1:
+    recurseCount = 0
     count += 1
     (data, client_address,) = ss.recvfrom(512) # DNS limits UDP msgs to 512 bytes
     
@@ -974,17 +975,26 @@ while 1:
     """
     Clean up caches 
     """
-    acache.deleteExpiredRecords(now)
-    cnamecache.deleteExpiredRecords(now)
+    try:
+        acache.deleteExpiredRecords(now)
+        cnamecache.deleteExpiredRecords(now)
+    except (Exception,struct.error):
+        pass
+    except:
+        pass
     """
     Call recursiveLookup method with root address for resolving query
     """
     try:
         serverData = recursiveLookup(data,ROOTNS_IN_ADDR)
     except (Exception,struct.error,error) as e:
-        header,question_entry,resource_records = deconstructData(data)
-        header._rcode = Header.RCODE_SRVFAIL
-        serverData = header.pack() + question_entry.pack() + EMPTY_RESOURCE_RECORD
+        recurseCount += 1
+        if recurseCount == 3:
+            header,question_entry,resource_records = deconstructData(data)
+            header._rcode = Header.RCODE_SRVFAIL
+            serverData = header.pack() + question_entry.pack() + EMPTY_RESOURCE_RECORD
+        else:
+            serverData = recursiveLookup(data,ROOTNS_IN_ADDR)
     # print("Data returned is")
     # printDeconstructOutgoing(serverData)
 
