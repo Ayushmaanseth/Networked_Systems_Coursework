@@ -1003,7 +1003,6 @@ def recursiveLookup(data,address):
 # This is a simple, single-threaded server that takes successive
 # connections with each iteration of the following loop:
 while 1:
-    recurseCount = 0
     count += 1
     (data, client_address,) = ss.recvfrom(512) # DNS limits UDP msgs to 512 bytes
     
@@ -1036,13 +1035,11 @@ while 1:
     try:
         serverData = recursiveLookup(data,ROOTNS_IN_ADDR)
     except (Exception,struct.error,error) as e:
-        recurseCount += 1
-        if recurseCount == 3:
-            header,question_entry,resource_records = deconstructData(data)
-            header._rcode = Header.RCODE_SRVFAIL
-            serverData = header.pack() + question_entry.pack() + EMPTY_RESOURCE_RECORD
-        else:
-            serverData = recursiveLookup(data,ROOTNS_IN_ADDR)
+        header,question_entry,resource_records = deconstructData(data)
+        header._rcode = Header.RCODE_SRVFAIL
+        header._qr = 1
+        header._aa = 0
+        serverData = header.pack() + question_entry.pack() + EMPTY_RESOURCE_RECORD
     # print("Data returned is")
     # printDeconstructOutgoing(serverData)
 
